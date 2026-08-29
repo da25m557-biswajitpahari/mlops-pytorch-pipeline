@@ -1,61 +1,87 @@
 import json
-import os
 from pathlib import Path
 
 import torch
-from torch import nn
+import torch.nn as nn
 import yaml
 
 from dataset import get_dataloaders
 from model import get_model
 
 
-def run_epoch(model, loader, criterion, device, optimizer=None):
-    training = optimizer is not None
-    model.train(training)
+def load_config(config_path: str) -> dict:
+    with open(config_path) as f:
+        return yaml.safe_load(f)
 
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    model.train()
     total_loss = 0.0
     correct = 0
     total = 0
 
-    with torch.set_grad_enabled(training):
-        for images, labels in loader:
-            images = images.to(device)
-            labels = labels.to(device)
+    for inputs, targets in loader:
+        inputs, targets = inputs.to(device), targets.to(device)
 
-            if training:
-                optimizer.zero_grad()
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
 
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+        total_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
 
-            if training:
-                loss.backward()
-                optimizer.step()
+    avg_loss = total_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
 
-            total_loss += loss.item() * labels.size(0)
-            correct += (outputs.argmax(dim=1) == labels).sum().item()
-            total += labels.size(0)
 
-    return total_loss / total, correct / total
+@torch.no_grad()
+def evaluate(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    for inputs, targets in loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+
+        total_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
+
+    avg_loss = total_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
 
 
 def main():
-    config_path = os.getenv(
-        "TRAINING_CONFIG", "configs/training_config.yaml"
-    )
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    config_path = Path("/app/configs/training_config.yaml")
+    if not config_path.exists():
+        config_path = Path("configs/training_config.yaml")
 
-    torch.manual_seed(42)
+    config = load_config(str(config_path))
+
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
-    )
-
-    train_loader, val_loader = get_dataloaders(
-        data_dir=config["data"]["data_dir"],
-        batch_size=config["training"]["batch_size"],
-        num_workers=config["data"].get("num_workers", 0),
     )
 
     model = get_model(
@@ -63,73 +89,93 @@ def main():
         num_classes=config["model"]["num_classes"],
     ).to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    train_loader, val_loader = get_dataloaders(
+        data_dir=config["data"]["data_dir"],
+        batch_size=config["training"]["batch_size"],
+    )
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config["training"]["learning_rate"],
     )
-
-    checkpoint_dir = Path(config["output"]["checkpoint_dir"])
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / config["output"]["model_name"]
+    criterion = nn.CrossEntropyLoss()
 
     best_val_loss = float("inf")
     patience_counter = 0
     patience = config["training"]["early_stopping_patience"]
 
-    print(json.dumps({
-        "event": "training_started",
-        "device": str(device),
-        "epochs": config["training"]["epochs"],
-    }), flush=True)
+    checkpoint_dir = Path(config["output"]["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, config["training"]["epochs"] + 1):
-        train_loss, train_accuracy = run_epoch(
-            model, train_loader, criterion, device, optimizer
+    for epoch in range(config["training"]["epochs"]):
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, optimizer, criterion, device
         )
-        val_loss, val_accuracy = run_epoch(
+        val_loss, val_acc = evaluate(
             model, val_loader, criterion, device
         )
 
-        print(json.dumps({
-            "epoch": epoch,
+        log_entry = {
+            "epoch": epoch + 1,
             "train_loss": round(train_loss, 4),
-            "train_accuracy": round(train_accuracy, 4),
+            "train_accuracy": round(train_acc, 4),
             "val_loss": round(val_loss, 4),
-            "val_accuracy": round(val_accuracy, 4),
-        }), flush=True)
+            "val_accuracy": round(val_acc, 4),
+        }
+        print(json.dumps(log_entry), flush=True)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
 
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "architecture": config["model"]["architecture"],
-                "num_classes": config["model"]["num_classes"],
-                "class_names": train_loader.dataset.classes,
-                "val_loss": val_loss,
-                "val_accuracy": val_accuracy,
-            }, checkpoint_path)
+            save_path = (
+                checkpoint_dir / config["output"]["model_name"]
+            )
 
-            print(json.dumps({
-                "event": "checkpoint_saved",
-                "path": str(checkpoint_path),
-            }), flush=True)
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc,
+                },
+                save_path,
+            )
+
+            print(
+                json.dumps(
+                    {
+                        "event": "checkpoint_saved",
+                        "path": str(save_path),
+                    }
+                ),
+                flush=True,
+            )
         else:
             patience_counter += 1
+
             if patience_counter >= patience:
-                print(json.dumps({
-                    "event": "early_stopping",
-                    "epoch": epoch,
-                }), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "event": "early_stopping",
+                            "epoch": epoch + 1,
+                        }
+                    ),
+                    flush=True,
+                )
                 break
 
-    print(json.dumps({
-        "event": "training_complete",
-        "best_val_loss": best_val_loss,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                "event": "training_complete",
+                "best_val_loss": round(best_val_loss, 4),
+            }
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
