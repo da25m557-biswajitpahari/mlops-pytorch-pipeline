@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cifar10-training
+  namespace: ml-training
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: cifar10-training
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: training
+          image: mlops-train:v2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TRAINING_CONFIG
+              value: /app/configs/training_config.yaml
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: MKL_NUM_THREADS
+              value: "2"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /app/configs
+              readOnly: true
+            - name: model-storage
+              mountPath: /app/checkpoints
+            - name: dataset
+              mountPath: /app/data
+      volumes:
+        - name: config
+          configMap:
+            name: training-config
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-storage
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: data-storage
