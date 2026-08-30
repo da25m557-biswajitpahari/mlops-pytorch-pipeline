@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: cifar10-training
-  namespace: mlops
+  namespace: ml-training
 spec:
   backoffLimit: 2
   template:
@@ -15,7 +15,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: training
-          image: mlops-train:v1
+          image: mlops-train:v2
           imagePullPolicy: IfNotPresent
           env:
             - name: TRAINING_CONFIG
@@ -26,11 +26,11 @@ spec:
               value: "2"
           resources:
             requests:
-              cpu: "500m"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "4Gi"
             limits:
               cpu: "2"
-              memory: "2Gi"
+              memory: "4Gi"
           volumeMounts:
             - name: config
               mountPath: /app/configs
@@ -39,8 +39,6 @@ spec:
               mountPath: /app/checkpoints
             - name: dataset
               mountPath: /app/data
-              subPath: data
-              readOnly: false
       volumes:
         - name: config
           configMap:
@@ -50,4 +48,4 @@ spec:
             claimName: model-storage
         - name: dataset
           persistentVolumeClaim:
-            claimName: model-storage
+            claimName: data-storage

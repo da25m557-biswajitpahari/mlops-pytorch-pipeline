@@ -2,7 +2,6 @@ import pytest
 import torch
 from src.model import get_model
 
-
 def test_model_output_shape():
     model = get_model()
     model.eval()
@@ -12,7 +11,6 @@ def test_model_output_shape():
 
     assert outputs.shape == (2, 10)
     assert torch.isfinite(outputs).all()
-
 
 def test_model_backward():
     model = get_model()
@@ -26,6 +24,18 @@ def test_model_backward():
         assert parameter.grad is not None
         assert torch.isfinite(parameter.grad).all()
 
+def test_resnet18_output_shape():
+    model = get_model(
+        architecture="resnet18",
+        num_classes=10,
+    )
+    model.eval()
+
+    with torch.no_grad():
+        outputs = model(torch.randn(2, 3, 32, 32))
+
+    assert outputs.shape == (2, 10)
+    assert torch.isfinite(outputs).all()
 
 def test_unsupported_architecture():
     with pytest.raises(ValueError, match="Unsupported architecture"):
