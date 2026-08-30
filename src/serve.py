@@ -41,6 +41,14 @@ async def lifespan(app: FastAPI):
         "checkpoints/classifier_v1.pt",
     )
 
+    model_architecture = os.getenv(
+        "MODEL_ARCHITECTURE",
+        "simple_cnn",
+    )
+    model_num_classes = int(
+        os.getenv("MODEL_NUM_CLASSES", "10")
+    )
+
     checkpoint = torch.load(
         model_path,
         map_location="cpu",
@@ -48,8 +56,8 @@ async def lifespan(app: FastAPI):
     )
 
     model = get_model(
-        architecture="simple_cnn",
-        num_classes=10,
+        architecture=model_architecture,
+        num_classes=model_num_classes,
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
